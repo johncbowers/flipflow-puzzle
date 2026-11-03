@@ -295,7 +295,12 @@ function setHover(info) {
   else if (info) setStatus(`Flip: degrees ${game.tri.degree(info.a)},${game.tri.degree(info.b)} lose one; ${game.tri.degree(info.c)},${game.tri.degree(info.d)} gain one.`);
 }
 
+// Spin-down after a flick: angular velocity vector in view coords (rad/s).
+let spin = null;
+const SPIN_DECAY = 0.9;   // seconds for the spin to fall by a factor e
+
 canvas.addEventListener('pointerdown', e => {
+  spin = null;
   try { canvas.setPointerCapture(e.pointerId); } catch { /* pointer already gone */ }
   pinch.set(e.pointerId, [e.clientX, e.clientY]);
   pointer = { id: e.pointerId, x: e.clientX, y: e.clientY, x0: e.clientX, y0: e.clientY, moved: false, type: e.pointerType };
@@ -309,7 +314,7 @@ canvas.addEventListener('pointermove', e => {
     const [p2, q2] = [...pinch.values()];
     const d1 = Math.hypot(p2[0] - q2[0], p2[1] - q2[1]);
     if (d0 > 0) main.zoom = Math.min(3.5, Math.max(0.5, main.zoom * d1 / d0));
-    if (pointer) pointer.moved = true;
+    if (pointer) { pointer.moved = true; pointer.vel = null; }
     return;
   }
   if (pinch.has(e.pointerId)) pinch.set(e.pointerId, [e.clientX, e.clientY]);
@@ -319,7 +324,13 @@ canvas.addEventListener('pointermove', e => {
     }
     if (pointer.moved) {
       const r = canvas.getBoundingClientRect();
-      main.arcball(pointer.x - r.left, pointer.y - r.top, e.clientX - r.left, e.clientY - r.top);
+      const st = main.arcball(pointer.x - r.left, pointer.y - r.top, e.clientX - r.left, e.clientY - r.top);
+      const dt = (e.timeStamp - (pointer.t ?? e.timeStamp)) / 1000;
+      if (st && dt > 0) {
+        const w = st.axis.map(a => a * st.angle / dt), old = pointer.vel;
+        pointer.vel = old ? w.map((x, i) => 0.6 * x + 0.4 * old[i]) : w;
+      }
+      pointer.t = e.timeStamp;
       pointer.x = e.clientX; pointer.y = e.clientY;
     }
     return;
@@ -335,6 +346,10 @@ function endPointer(e) {
   if (!pointer || pointer.id !== e.pointerId) return;
   canvas.classList.remove('dragging');
   const p = pointer; pointer = null;
+  if (p.moved && p.vel && e.timeStamp - p.t < 80) {
+    const w = Math.hypot(...p.vel);
+    if (w > 0.3) spin = p.vel.map(x => x * Math.min(1, 12 / w));
+  }
   if (p.moved || game.anim || game.busy || e.type === 'pointercancel') return;
   const r = canvas.getBoundingClientRect();
   const info = edgeAt(e.clientX - r.left, e.clientY - r.top);
@@ -364,7 +379,7 @@ window.addEventListener('keydown', e => {
   else if (e.key === 'Escape') { ui.help.classList.add('hidden'); ui.win.classList.add('hidden'); }
 });
 
-function resetView() { main.rot = [1, 0, 0, 0, 1, 0, 0, 0, 1]; main.zoom = 1; }
+function resetView() { spin = null; main.rot = [1, 0, 0, 0, 1, 0, 0, 0, 1]; main.zoom = 1; }
 
 ui.newBtn.onclick = () => newPuzzle(LEVELS.find(l => l.id === ui.level.value), ui.difficulty.value, randomSeed());
 ui.level.onchange = ui.newBtn.onclick;
@@ -384,6 +399,12 @@ let last = performance.now(), previewAngle = 0, dirty = true, lastViewKey = '';
 function frame(now) {
   const dt = Math.min(0.05, (now - last) / 1000);
   last = now;
+  if (spin && !pointer) {
+    const w = Math.hypot(...spin);
+    main.rotateAbout(spin.map(x => x / w), w * dt);
+    const k = Math.exp(-dt / SPIN_DECAY);
+    spin = w * k < 0.05 ? null : spin.map(x => x * k);
+  }
   if (game.P && !game.busy) {
     const animating = !!game.anim;
     if (animating) stepAnim(dt);

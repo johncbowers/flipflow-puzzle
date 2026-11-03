@@ -228,8 +228,10 @@ export class SphereRenderer {
     const a = this.arcballVector(x0, y0), b = this.arcballVector(x1, y1);
     const ax = [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
     const s = Math.hypot(...ax);
-    if (s < 1e-12) return;
-    this.rotateAbout(ax.map(v => v / s), Math.atan2(s, a[0] * b[0] + a[1] * b[1] + a[2] * b[2]));
+    if (s < 1e-12) return null;
+    const axis = ax.map(v => v / s), angle = Math.atan2(s, a[0] * b[0] + a[1] * b[1] + a[2] * b[2]);
+    this.rotateAbout(axis, angle);
+    return { axis, angle };
   }
 
   // R <- Rot(axis, ang) * R, axis a unit vector in view coords
