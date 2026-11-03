@@ -296,7 +296,7 @@ function setHover(info) {
 }
 
 canvas.addEventListener('pointerdown', e => {
-  canvas.setPointerCapture(e.pointerId);
+  try { canvas.setPointerCapture(e.pointerId); } catch { /* pointer already gone */ }
   pinch.set(e.pointerId, [e.clientX, e.clientY]);
   pointer = { id: e.pointerId, x: e.clientX, y: e.clientY, x0: e.clientX, y0: e.clientY, moved: false, type: e.pointerType };
 });
@@ -318,8 +318,8 @@ canvas.addEventListener('pointermove', e => {
       pointer.moved = true; canvas.classList.add('dragging');
     }
     if (pointer.moved) {
-      const sc = 0.5 * main.layout().size * main.zoom;
-      main.rotateBy((e.clientX - pointer.x) / sc, -(e.clientY - pointer.y) / sc);
+      const r = canvas.getBoundingClientRect();
+      main.arcball(pointer.x - r.left, pointer.y - r.top, e.clientX - r.left, e.clientY - r.top);
       pointer.x = e.clientX; pointer.y = e.clientY;
     }
     return;
@@ -409,7 +409,7 @@ if (!localStorageGet('ff-seen-help')) { ui.help.classList.remove('hidden'); loca
 newPuzzle(first.lv, first.d, first.seed).then(() => requestAnimationFrame(frame));
 
 // for debugging from the console
-window.flipflow = { game, startFlip, undo, hint };
+window.flipflow = { game, main, startFlip, undo, hint };
 
 function localStorageGet(k) { try { return localStorage.getItem(k); } catch { return null; } }
 function localStorageSet(k, v) { try { localStorage.setItem(k, v); } catch { /* ignore */ } }

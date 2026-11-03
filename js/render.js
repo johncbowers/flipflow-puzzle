@@ -209,13 +209,32 @@ export class SphereRenderer {
     };
   }
 
-  rotateBy(dx, dy) {
-    // rotate the view about the axis (-dy, dx, 0) by |d| radians, R <- Rot * R
-    const ang = Math.hypot(dx, dy);
-    if (ang < 1e-9) return;
-    const ax = [-dy / ang, dx / ang, 0];
+  // Arcball (Shoemake): a screen point maps to the visible sphere itself, or
+  // to its rim when outside it, in view coords.
+  arcballVector(x, y) {
+    const w = this.canvas.clientWidth, h = this.canvas.clientHeight, L = this.layout();
+    const sc = 0.5 * L.size * this.zoom;
+    const qx = (x - 0.5 * w - L.cx) / sc, qy = (0.5 * h + L.cy - y) / sc;
+    const rr = qx * qx + qy * qy;
+    if (rr <= 1) return [qx, qy, Math.sqrt(1 - rr)];
+    const r = Math.sqrt(rr);
+    return [qx / r, qy / r, 0];
+  }
+
+  // Rotate so the sphere point under (x0, y0) moves to (x1, y1). Dragging
+  // inside the sphere keeps the grabbed point under the cursor; dragging
+  // outside it spins about the view axis.
+  arcball(x0, y0, x1, y1) {
+    const a = this.arcballVector(x0, y0), b = this.arcballVector(x1, y1);
+    const ax = [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+    const s = Math.hypot(...ax);
+    if (s < 1e-12) return;
+    this.rotateAbout(ax.map(v => v / s), Math.atan2(s, a[0] * b[0] + a[1] * b[1] + a[2] * b[2]));
+  }
+
+  // R <- Rot(axis, ang) * R, axis a unit vector in view coords
+  rotateAbout([x, y, z], ang) {
     const c = Math.cos(ang), s = Math.sin(ang), t = 1 - c;
-    const [x, y, z] = ax;
     const M = [t * x * x + c, t * x * y - s * z, t * x * z + s * y,
       t * x * y + s * z, t * y * y + c, t * y * z - s * x,
       t * x * z - s * y, t * y * z + s * x, t * z * z + c];
