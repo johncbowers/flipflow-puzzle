@@ -12,7 +12,7 @@ uniform vec2 uOff;             // sphere center offset from canvas center, devic
 uniform float uZoom;
 uniform mat3 uRot;            // packing coords -> view coords
 uniform highp sampler2D uCirc; // row 0: center.xyz, radius; row 1: rgb, highlight; row 2: marker
-uniform highp sampler2D uEdge; // (i, j, style, 0)
+uniform highp sampler2D uEdge; // (i, j, style, 0); style 0 plain, 1 hover ok, 2 hover blocked, 3 locked
 uniform int uNV;
 uniform int uNE;
 uniform vec4 uGhost;          // c, d of the prospective new edge (or -1), style
@@ -80,15 +80,22 @@ void main() {
   }
 
   // edges
-  float ed = 10.0, hd = 10.0; float hstyle = 0.0; float t;
+  float ed = 10.0, hd = 10.0, ld = 10.0; float hstyle = 0.0; float t;
   for (int e = 0; e < uNE; e++) {
     vec4 E = texelFetch(uEdge, ivec2(e, 0), 0);
     float d = arcDist(u, cen(int(E.x + 0.5)), cen(int(E.y + 0.5)), t);
-    if (E.z > 0.5) { if (d < hd) { hd = d; hstyle = E.z; } }
+    if (E.z > 2.5) ld = min(ld, d);
+    else if (E.z > 0.5) { if (d < hd) { hd = d; hstyle = E.z; } }
     else ed = min(ed, d);
   }
   float lw = min(0.5 * uLine * pa, 0.08 * rad);
   col = mix(col, vec3(0.06, 0.06, 0.09), 0.75 * (1.0 - smoothstep(lw, lw + pa, ed)));
+  if (ld < 9.0) {
+    // locked: a white bar with a dark border
+    float kw = 1.25 * uLine * pa;
+    col = mix(col, vec3(0.02, 0.02, 0.04), 0.9 * (1.0 - smoothstep(kw + pa, kw + 2.2 * pa, ld)));
+    col = mix(col, vec3(1.0), 1.0 - smoothstep(kw, kw + pa, ld));
+  }
   if (hd < 9.0) {
     vec3 hc = hstyle < 1.5 ? vec3(1.0, 0.85, 0.2) : vec3(1.0, 0.3, 0.3);
     float hw = 1.6 * uLine * pa;
@@ -178,7 +185,7 @@ export class SphereRenderer {
     this.nV = n;
   }
 
-  // edges: array of [i, j, style]  (style 0 normal, 1 hover ok, 2 hover blocked)
+  // edges: array of [i, j, style]  (style 0 normal, 1 hover ok, 2 hover blocked, 3 locked)
   setEdges(edges) {
     const gl = this.gl, n = Math.max(1, edges.length), buf = new Float32Array(4 * n);
     edges.forEach(([i, j, s], k) => buf.set([i, j, s || 0, 0], 4 * k));

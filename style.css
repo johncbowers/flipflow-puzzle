@@ -23,6 +23,7 @@ body {
 #sphere {
   position: fixed; inset: 0; width: 100%; height: 100%;
   touch-action: none; cursor: grab;
+  -webkit-touch-callout: none;
 }
 #sphere.dragging { cursor: grabbing; }
 #sphere.over-edge { cursor: pointer; }

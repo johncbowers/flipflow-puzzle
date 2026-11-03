@@ -10,6 +10,7 @@ const PALETTE = {
 const colorOf = d => PALETTE[Math.min(11, Math.max(3, d))];
 const hexRGB = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16) / 255);
 const FLOW_SECONDS = 1.15;
+const LONG_PRESS_MS = 450;
 
 const $ = id => document.getElementById(id);
 const ui = {
@@ -49,6 +50,7 @@ const game = {
   goal: null, start: null,
   tri: null, P: null, history: [],
   anim: null, hover: null, hintEdge: null, busy: false, won: false,
+  locked: new Set(),   // edge keys min * nV + max that may not be flipped
 };
 
 // ------------------------------------------------------------------ setup
@@ -102,6 +104,7 @@ function restart() {
   game.tri = game.start.tri.clone();
   game.P = game.start.P.slice();
   game.history = [];
+  game.locked = new Set();
   game.anim = null; game.hover = null; game.hintEdge = null; game.won = false;
   ui.par.textContent = game.start.flips;
   ui.goalText.textContent = `Make the degrees match: ${game.level.blurb}.`;
@@ -156,7 +159,7 @@ function refreshEdges() {
   const edges = [];
   for (const [a, b] of t.edges()) {
     if (skip && ((a === skip[0] && b === skip[1]) || (a === skip[1] && b === skip[0]))) continue;
-    let style = 0;
+    let style = isLocked(a, b) ? 3 : 0;
     if (h && ((a === h.a && b === h.b) || (a === h.b && b === h.a))) style = h.ok ? 1 : 2;
     edges.push([a, b, style]);
   }
@@ -194,9 +197,35 @@ function circleData() {
 
 // --------------------------------------------------------------- flipping
 
+// --------------------------------------------------------------- locks
+
+const edgeKey = (a, b) => Math.min(a, b) * game.tri.nV + Math.max(a, b);
+function isLocked(a, b) { return game.locked.has(edgeKey(a, b)); }
+
+// flipInfo, also refusing locked edges
+function flipInfo(a, b) {
+  const info = game.tri.flipInfo(a, b);
+  if (info.reason !== 'not an edge' && isLocked(a, b)) {
+    info.ok = false; info.locked = true;
+    info.reason = 'it is locked (long-press it to unlock)';
+  }
+  return info;
+}
+
+function toggleLock(info, touch = false) {
+  const k = edgeKey(info.a, info.b);
+  const now = !game.locked.has(k);
+  if (now) game.locked.add(k); else game.locked.delete(k);
+  game.hover = null; game.hintEdge = null;
+  canvas.classList.remove('over-edge');
+  refreshEdges();
+  setStatus(now ? 'Edge locked: it cannot be flipped until you long-press it again.' : 'Edge unlocked.');
+  if (touch && navigator.vibrate) navigator.vibrate(15);
+}
+
 function startFlip(a, b, isUndo = false) {
   if (game.anim || game.busy) return;
-  const info = game.tri.flipInfo(a, b);
+  const info = flipInfo(a, b);
   if (!info.ok) { setStatus(`Can't flip that edge: ${info.reason}.`); return; }
   const flow = new Flow(game.tri, game.P, [[a, b]]);
   game.anim = { flow, info, t: 0, s: 0, isUndo, frames: [[0, game.P.slice()]] };
@@ -267,6 +296,7 @@ function finishFlip() {
 function undo() {
   const last = game.history[game.history.length - 1];
   if (!last || game.anim) return;
+  if (isLocked(last.c, last.d)) { setStatus('Undo would flip a locked edge. Long-press it to unlock first.'); return; }
   startFlip(last.c, last.d, true);
 }
 
@@ -281,7 +311,7 @@ function hint() {
   const base = score(game.tri);
   let best = null, bestScore = Infinity;
   for (const [a, b] of game.tri.edges()) {
-    const f = game.tri.flipInfo(a, b);
+    const f = flipInfo(a, b);
     if (!f.ok) continue;
     const t = game.tri.clone(); t.flip(a, b);
     const sc = score(t) + Math.random() * 0.5;
@@ -310,7 +340,7 @@ function edgeAt(x, y) {
     const d = arcDistance(hit.u, caps[a], caps[b]);
     if (d < bd) { bd = d; best = [a, b]; }
   }
-  return best ? game.tri.flipInfo(best[0], best[1]) : null;
+  return best ? flipInfo(best[0], best[1]) : null;
 }
 
 function setHover(info) {
@@ -333,6 +363,15 @@ canvas.addEventListener('pointerdown', e => {
   try { canvas.setPointerCapture(e.pointerId); } catch { /* pointer already gone */ }
   pinch.set(e.pointerId, [e.clientX, e.clientY]);
   pointer = { id: e.pointerId, x: e.clientX, y: e.clientY, x0: e.clientX, y0: e.clientY, moved: false, type: e.pointerType };
+  // long press on an edge toggles its lock
+  if (!game.anim && !game.busy && pinch.size === 1) {
+    const r = canvas.getBoundingClientRect();
+    const info = edgeAt(e.clientX - r.left, e.clientY - r.top);
+    const p = pointer;
+    if (info) p.lockTimer = setTimeout(() => {
+      if (pointer === p && !p.moved && !game.anim) { p.longPressed = true; toggleLock(info, p.type !== 'mouse'); }
+    }, LONG_PRESS_MS);
+  }
 });
 
 canvas.addEventListener('pointermove', e => {
@@ -343,13 +382,14 @@ canvas.addEventListener('pointermove', e => {
     const [p2, q2] = [...pinch.values()];
     const d1 = Math.hypot(p2[0] - q2[0], p2[1] - q2[1]);
     if (d0 > 0) main.zoom = Math.min(3.5, Math.max(0.5, main.zoom * d1 / d0));
-    if (pointer) { pointer.moved = true; pointer.vel = null; }
+    if (pointer) { pointer.moved = true; pointer.vel = null; clearTimeout(pointer.lockTimer); }
     return;
   }
   if (pinch.has(e.pointerId)) pinch.set(e.pointerId, [e.clientX, e.clientY]);
   if (pointer && pointer.id === e.pointerId) {
     if (!pointer.moved && Math.hypot(e.clientX - pointer.x0, e.clientY - pointer.y0) > 5) {
       pointer.moved = true; canvas.classList.add('dragging');
+      clearTimeout(pointer.lockTimer);
     }
     if (pointer.moved) {
       const r = canvas.getBoundingClientRect();
@@ -375,6 +415,8 @@ function endPointer(e) {
   if (!pointer || pointer.id !== e.pointerId) return;
   canvas.classList.remove('dragging');
   const p = pointer; pointer = null;
+  clearTimeout(p.lockTimer);
+  if (p.longPressed) return;
   if (p.moved && p.vel && e.timeStamp - p.t < 80) {
     const w = Math.hypot(...p.vel);
     if (w > 0.3) spin = p.vel.map(x => x * Math.min(1, 12 / w));
@@ -392,6 +434,7 @@ function endPointer(e) {
   else setStatus(`Can't flip that edge: ${info.reason}.`);
 }
 canvas.addEventListener('pointerup', endPointer);
+canvas.addEventListener('contextmenu', e => e.preventDefault());
 canvas.addEventListener('pointercancel', endPointer);
 canvas.addEventListener('pointerleave', e => { if (e.pointerType === 'mouse' && !pointer) setHover(null); });
 
