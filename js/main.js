@@ -361,6 +361,7 @@ const SPIN_DECAY = 0.9;   // seconds for the spin to fall by a factor e
 canvas.addEventListener('pointerdown', e => {
   spin = null;
   try { canvas.setPointerCapture(e.pointerId); } catch { /* pointer already gone */ }
+  if (e.pointerType === 'mouse' || e.isPrimary) pinch.clear();   // drop any pointer whose up we missed
   pinch.set(e.pointerId, [e.clientX, e.clientY]);
   pointer = { id: e.pointerId, x: e.clientX, y: e.clientY, x0: e.clientX, y0: e.clientY, moved: false, type: e.pointerType };
   // long press on an edge toggles its lock
@@ -368,9 +369,13 @@ canvas.addEventListener('pointerdown', e => {
     const r = canvas.getBoundingClientRect();
     const info = edgeAt(e.clientX - r.left, e.clientY - r.top);
     const p = pointer;
-    if (info) p.lockTimer = setTimeout(() => {
-      if (pointer === p && !p.moved && !game.anim) { p.longPressed = true; toggleLock(info, p.type !== 'mouse'); }
-    }, LONG_PRESS_MS);
+    if (info) {
+      showPressRing(e.clientX, e.clientY, isLocked(info.a, info.b));
+      p.lockTimer = setTimeout(() => {
+        hidePressRing();
+        if (pointer === p && !p.moved && !game.anim) { p.longPressed = true; toggleLock(info, p.type !== 'mouse'); }
+      }, LONG_PRESS_MS);
+    }
   }
 });
 
@@ -382,14 +387,14 @@ canvas.addEventListener('pointermove', e => {
     const [p2, q2] = [...pinch.values()];
     const d1 = Math.hypot(p2[0] - q2[0], p2[1] - q2[1]);
     if (d0 > 0) main.zoom = Math.min(3.5, Math.max(0.5, main.zoom * d1 / d0));
-    if (pointer) { pointer.moved = true; pointer.vel = null; clearTimeout(pointer.lockTimer); }
+    if (pointer) { pointer.moved = true; pointer.vel = null; clearTimeout(pointer.lockTimer); hidePressRing(); }
     return;
   }
   if (pinch.has(e.pointerId)) pinch.set(e.pointerId, [e.clientX, e.clientY]);
   if (pointer && pointer.id === e.pointerId) {
     if (!pointer.moved && Math.hypot(e.clientX - pointer.x0, e.clientY - pointer.y0) > 5) {
       pointer.moved = true; canvas.classList.add('dragging');
-      clearTimeout(pointer.lockTimer);
+      clearTimeout(pointer.lockTimer); hidePressRing();
     }
     if (pointer.moved) {
       const r = canvas.getBoundingClientRect();
@@ -415,7 +420,7 @@ function endPointer(e) {
   if (!pointer || pointer.id !== e.pointerId) return;
   canvas.classList.remove('dragging');
   const p = pointer; pointer = null;
-  clearTimeout(p.lockTimer);
+  clearTimeout(p.lockTimer); hidePressRing();
   if (p.longPressed) return;
   if (p.moved && p.vel && e.timeStamp - p.t < 80) {
     const w = Math.hypot(...p.vel);
@@ -435,6 +440,20 @@ function endPointer(e) {
 }
 canvas.addEventListener('pointerup', endPointer);
 canvas.addEventListener('contextmenu', e => e.preventDefault());
+// Keep iOS from turning a held touch into its own long-press gesture,
+// which cancels the pointer before the lock timer fires.
+for (const t of ['touchstart', 'touchmove']) canvas.addEventListener(t, e => e.preventDefault(), { passive: false });
+
+const pressRing = document.getElementById('pressRing');
+function showPressRing(x, y, unlocking) {
+  pressRing.style.left = `${x}px`; pressRing.style.top = `${y}px`;
+  pressRing.style.setProperty('--press-ms', `${LONG_PRESS_MS}ms`);
+  pressRing.classList.toggle('unlock', unlocking);
+  pressRing.classList.remove('arming');
+  void pressRing.offsetWidth;   // restart the animation
+  pressRing.classList.add('arming');
+}
+function hidePressRing() { pressRing.classList.remove('arming'); }
 canvas.addEventListener('pointercancel', endPointer);
 canvas.addEventListener('pointerleave', e => { if (e.pointerType === 'mouse' && !pointer) setHover(null); });
 

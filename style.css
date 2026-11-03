@@ -76,6 +76,20 @@ button:disabled { opacity: 0.45; cursor: default; }
 #tools > * { pointer-events: auto; }
 #status { color: var(--muted); font-size: 13px; margin-left: 6px; pointer-events: none; }
 
+#pressRing {
+  position: fixed; width: 44px; height: 44px; margin: -22px 0 0 -22px; border-radius: 50%;
+  pointer-events: none; opacity: 0; z-index: 4;
+  background: conic-gradient(#fff calc(var(--p, 0) * 1turn), rgba(255,255,255,0.15) 0);
+  -webkit-mask: radial-gradient(circle, transparent 15px, #000 16px);
+          mask: radial-gradient(circle, transparent 15px, #000 16px);
+}
+#pressRing.unlock { background: conic-gradient(#ffd34d calc(var(--p, 0) * 1turn), rgba(255,211,77,0.15) 0); }
+/* fade in only after a moment, so ordinary clicks do not flash a ring */
+#pressRing.arming { animation: press-fill var(--press-ms, 450ms) linear forwards, ring-in 80ms 120ms forwards; }
+@keyframes ring-in { to { opacity: 1; } }
+@property --p { syntax: '<number>'; inherits: false; initial-value: 0; }
+@keyframes press-fill { from { --p: 0; } to { --p: 1; } }
+
 #toast {
   position: fixed; left: 50%; top: 76px; transform: translate(-50%, -8px);
   max-width: min(520px, calc(100% - 32px)); padding: 10px 14px;
