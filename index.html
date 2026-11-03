@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Flip &amp; Flow</title>
+<meta name="description" content="A circle packing puzzle on the sphere: flip edges of the triangulation and watch the packing flow.">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<canvas id="sphere" aria-label="Circle packing on the sphere"></canvas>
+
+<header id="bar">
+  <div class="brand">
+    <h1>Flip &amp; Flow</h1>
+    <span class="sub">a circle packing puzzle</span>
+  </div>
+  <div class="controls">
+    <label>Goal <select id="level"></select></label>
+    <label>Difficulty
+      <select id="difficulty">
+        <option value="easy">Easy</option>
+        <option value="medium" selected>Medium</option>
+        <option value="hard">Hard</option>
+      </select>
+    </label>
+    <button id="newBtn" class="primary">New puzzle</button>
+    <button id="helpBtn" class="icon" title="How to play" aria-label="How to play">?</button>
+  </div>
+</header>
+
+<aside id="panel">
+  <div class="goal-title">Goal</div>
+  <canvas id="preview" aria-label="A packing that solves the puzzle"></canvas>
+  <div id="goalText" class="goal-text"></div>
+  <div id="degChips" class="deg-chips"></div>
+  <table id="degTable" class="deg-table">
+    <thead><tr><th></th><th>degree</th><th>now</th><th>goal</th></tr></thead>
+    <tbody></tbody>
+  </table>
+  <div class="stats">
+    <div><span id="moves">0</span><small>flips</small></div>
+    <div><span id="par">–</span><small>scramble</small></div>
+    <div><span id="overload">–</span><small>excess</small></div>
+  </div>
+</aside>
+
+<footer id="tools">
+  <button id="undoBtn" title="Undo (U)">Undo</button>
+  <button id="hintBtn" title="Hint (H)">Hint</button>
+  <button id="resetBtn" title="Restart this puzzle">Restart</button>
+  <button id="viewBtn" title="Reset view (V)">Reset view</button>
+  <div id="status" aria-live="polite"></div>
+</footer>
+
+<div id="loading" class="overlay hidden">
+  <div class="card">
+    <div id="loadingText">Building packing…</div>
+    <div class="progress"><div id="progressBar"></div></div>
+  </div>
+</div>
+
+<div id="win" class="overlay hidden">
+  <div class="card">
+    <h2>Solved!</h2>
+    <p id="winText"></p>
+    <div class="row">
+      <button id="winNew" class="primary">New puzzle</button>
+      <button id="winClose">Keep looking</button>
+    </div>
+  </div>
+</div>
+
+<div id="help" class="overlay hidden">
+  <div class="card wide">
+    <h2>How to play</h2>
+    <p>The sphere carries a <b>circle packing</b>: one circle per vertex of a triangulation, with two circles tangent exactly when their vertices share an edge. The dark geodesic arcs are the edges. Each circle is colored by its <b>degree</b>, the number of circles it touches.</p>
+    <p><b>Flip</b> an edge by clicking it (on a touch screen, tap once to select and again to flip). The two triangles beside the edge form a quadrilateral, and flipping swaps its diagonal: the two circles on the edge let go of each other while the two opposite circles are drawn together until they touch. The packing <b>flows</b> continuously from one packing to the next.</p>
+    <p>Reach the goal's degree pattern. Any packing with the right number of circles of each degree wins; it need not be the one in the preview. For the buckyball, that means every circle touches 5 or 6 others, with exactly twelve 5s.</p>
+    <p><b>Excess</b> is the total degree above 6. It is 0 only when no circle has more than 6 neighbors. <b>Scramble</b> is the number of flips used to make the puzzle, so a solution at least that short exists.</p>
+    <p class="keys">Drag to turn the sphere · scroll or pinch to zoom · <kbd>U</kbd> undo · <kbd>H</kbd> hint · <kbd>V</kbd> reset view</p>
+    <p class="credit">Based on Ken Stephenson's flip puzzle in CirclePack. The motion is flip-and-flow (R. Connelly and S. Gortler, <i>Packing disks by flipping and flowing</i>, 2021; J. C. Bowers, <i>A proof of the Koebe–Andre'ev–Thurston theorem via flow from tangency packings</i>, 2020): every edge except the flipped one stays tangent while the new pair is pulled together. Every packing in the game, including the scrambled starts, is built this way from the regular solids.</p>
+    <div class="row"><button id="helpClose" class="primary">Play</button></div>
+  </div>
+</div>
+
+<div id="nogl" class="overlay hidden"><div class="card"><h2>WebGL2 needed</h2><p>This puzzle draws the sphere with WebGL2, which this browser does not provide.</p></div></div>
+
+<script type="module" src="js/main.js"></script>
+</body>
+</html>
