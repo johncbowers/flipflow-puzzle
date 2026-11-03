@@ -18,7 +18,7 @@ const ui = {
   status: $('status'), moves: $('moves'), par: $('par'), overload: $('overload'),
   goalText: $('goalText'), chips: $('degChips'), degBody: document.querySelector('#degTable tbody'),
   loading: $('loading'), loadingText: $('loadingText'), bar: $('progressBar'),
-  win: $('win'), winText: $('winText'), help: $('help'),
+  win: $('win'), toast: $('toast'), winText: $('winText'), help: $('help'),
 };
 
 let main, preview;
@@ -148,9 +148,11 @@ function updatePanel() {
 
 function refreshEdges() {
   dirty = true;
-  const t = game.anim ? game.anim.flow.tri1 : game.tri;
-  const skip = game.anim ? [game.anim.info.c, game.anim.info.d] : null;
-  const h = !game.anim && (game.hover || game.hintEdge);
+  const R = game.anim && game.anim.rewind;
+  const flowing = game.anim && !R;
+  const t = flowing ? game.anim.flow.tri1 : game.tri;
+  const skip = flowing ? [game.anim.info.c, game.anim.info.d] : null;
+  const h = R ? { ...game.anim.info, ok: false } : !game.anim && (game.hover || game.hintEdge);
   const edges = [];
   for (const [a, b] of t.edges()) {
     if (skip && ((a === skip[0] && b === skip[1]) || (a === skip[1] && b === skip[0]))) continue;
@@ -159,7 +161,7 @@ function refreshEdges() {
     edges.push([a, b, style]);
   }
   main.setEdges(edges);
-  if (game.anim) main.ghost = [game.anim.info.c, game.anim.info.d, 0, 0];
+  if (flowing) main.ghost = [game.anim.info.c, game.anim.info.d, 0, 0];
   else if (h && h.ok) main.ghost = [h.c, h.d, 0, 0];
   else main.ghost = [-1, -1, 0, 0];
 }
@@ -197,25 +199,50 @@ function startFlip(a, b, isUndo = false) {
   const info = game.tri.flipInfo(a, b);
   if (!info.ok) { setStatus(`Can't flip that edge: ${info.reason}.`); return; }
   const flow = new Flow(game.tri, game.P, [[a, b]]);
-  game.anim = { flow, info, t: 0, s: 0, isUndo, saved: game.P.slice() };
+  game.anim = { flow, info, t: 0, s: 0, isUndo, frames: [[0, game.P.slice()]] };
   game.hover = null; game.hintEdge = null;
   refreshEdges();
 }
 
+const REWIND_SECONDS = 0.5;
+
 function stepAnim(dt) {
   const A = game.anim;
+  if (A.rewind) return stepRewind(dt);
   A.t += dt;
   const x = Math.min(1, A.t / FLOW_SECONDS);
   const s = x * x * (3 - 2 * x);
   if (!A.flow.advance(game.P, s)) {
-    game.P.set(A.saved);
-    game.anim = null;
+    // Play the flow backward to where it started, and say why.
+    A.rewind = { t: 0 };
     refreshEdges();
-    setStatus('That flow got stuck, so the flip was undone. Please report the puzzle URL.');
+    const msg = 'This flip could not be completed: the circles around a vertex of degree ' +
+      `${Math.max(game.tri.degree(A.info.c), game.tri.degree(A.info.d)) + 1} get too small for the solver's precision. The flip was undone.`;
+    setStatus(msg);
+    showToast(msg);
     return;
   }
   A.s = s;
+  A.frames.push([s, game.P.slice()]);
   if (x >= 1) finishFlip();
+}
+
+function stepRewind(dt) {
+  const A = game.anim, F = A.frames;
+  A.rewind.t += dt;
+  const x = Math.min(1, A.rewind.t / REWIND_SECONDS);
+  const [s, P] = F[Math.round((1 - x) * (F.length - 1))];
+  game.P.set(P);
+  A.s = s;
+  if (x >= 1) { game.anim = null; refreshEdges(); }
+}
+
+let toastTimer = null;
+function showToast(msg) {
+  ui.toast.textContent = msg;
+  ui.toast.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => ui.toast.classList.remove('show'), 5000);
 }
 
 function finishFlip() {

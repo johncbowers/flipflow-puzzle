@@ -169,11 +169,24 @@ export class Constraints {
   // index of (i, j), i >= j, in permuted coordinates
   at(i, j) { return this.rs[i] + j - this.fc[i]; }
 
+  // Fills F with the raw residuals and returns the largest relative one,
+  // |F_k| / (|p_i| |p_j|) in Euclidean norms. A tiny circle has |p| ~ 1/r, so
+  // its rows carry roundoff ~ 1e-16 |p_i| |p_j|; an absolute tolerance would
+  // be unreachable next to a high-degree vertex.
   residual(P, F = this.F) {
+    const nV = this.nV;
+    if (!this.norm || this.norm.length !== nV) this.norm = new Float64Array(nV);
+    const N = this.norm;
+    for (let v = 0; v < nV; v++) {
+      const o = 4 * v;
+      N[v] = Math.sqrt(P[o] ** 2 + P[o + 1] ** 2 + P[o + 2] ** 2 + P[o + 3] ** 2);
+    }
     let mx = 0;
     for (let k = 0; k < this.m; k++) {
       const v = lor(P, this.I[k], P, this.J[k]) - this.T[k];
-      F[k] = v; if (Math.abs(v) > mx) mx = Math.abs(v);
+      F[k] = v;
+      const rel = Math.abs(v) / (N[this.I[k]] * N[this.J[k]]);
+      if (rel > mx) mx = rel;
     }
     return mx;
   }
@@ -246,12 +259,18 @@ export function newton(P, C, { maxIt = 10, tol = 1e-11 } = {}) {
         }
       }
     }
-    let mxd = 0;
-    for (let k = 0; k < m; k++) mxd = Math.max(mxd, L[C.at(k, k)]);
-    for (let k = 0; k < m; k++) L[C.at(k, k)] += 1e-13 * mxd;
-    for (let k = 0; k < m; k++) C.bperm[pos[k]] = F[k];
+    // Jacobi scaling: rows touching tiny circles have diagonals ~1e4 times
+    // larger than others, so scale to unit diagonal before factoring.
+    const sc = C.scale || (C.scale = new Float64Array(m));
+    for (let i = 0; i < m; i++) sc[i] = 1 / Math.sqrt(L[C.at(i, i)]);
+    for (let i = 0; i < m; i++) {
+      const ri = C.rs[i] - C.fc[i];
+      for (let j = C.fc[i]; j <= i; j++) L[ri + j] *= sc[i] * sc[j];
+      L[ri + i] += 1e-14;
+    }
+    for (let k = 0; k < m; k++) C.bperm[pos[k]] = F[k] * sc[pos[k]];
     if (!envCholSolve(C, C.bperm, C.xperm)) return { ok: false, err };
-    for (let k = 0; k < m; k++) y[k] = C.xperm[pos[k]];
+    for (let k = 0; k < m; k++) y[k] = C.xperm[pos[k]] * sc[pos[k]];
     dP.fill(0);
     for (let v = 0; v < nV; v++) {
       for (const k of C.inc[v]) {
