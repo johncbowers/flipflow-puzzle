@@ -30,6 +30,8 @@ try {
   throw e;
 }
 preview.zoom = 0.96;
+preview.lineScale = 0.5;
+preview.markerPx = 4;
 // Keep the sphere clear of the header, footer and goal panel.
 main.layout = () => {
   const w = main.canvas.clientWidth, h = main.canvas.clientHeight;
@@ -114,7 +116,7 @@ function setupPreview() {
     const { n, r } = lorToCap(g.P, v);
     data.set([...n, r, ...hexRGB(colorOf(degs[v])), 0], 8 * v);
   }
-  preview.setCircles(data, g.tri.nV);
+  preview.setCircles(data, g.tri.nV, degs.map(d => d !== 6));
   preview.setEdges(g.tri.edges());
 }
 
@@ -411,7 +413,7 @@ function frame(now) {
     const moved = balanceStep(game.P, animating ? 0.01 : 0.02, 0.15) > 1e-7;
     const viewKey = main.rot.join() + main.zoom + main.canvas.clientWidth + 'x' + main.canvas.clientHeight;
     if (animating || moved || dirty || viewKey !== lastViewKey) {
-      main.setCircles(circleData(), game.tri.nV);
+      main.setCircles(circleData(), game.tri.nV, game.tri.degrees().map(d => d !== 6));
       main.draw();
       dirty = false; lastViewKey = viewKey;
     }

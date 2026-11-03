@@ -11,13 +11,14 @@ uniform vec2 uRes;
 uniform vec2 uOff;             // sphere center offset from canvas center, device px
 uniform float uZoom;
 uniform mat3 uRot;            // packing coords -> view coords
-uniform highp sampler2D uCirc; // row 0: center.xyz, radius; row 1: rgb, highlight
+uniform highp sampler2D uCirc; // row 0: center.xyz, radius; row 1: rgb, highlight; row 2: marker
 uniform highp sampler2D uEdge; // (i, j, style, 0)
 uniform int uNV;
 uniform int uNE;
 uniform vec4 uGhost;          // c, d of the prospective new edge (or -1), style
 uniform float uLine;          // line width in pixels
 uniform float uSize;          // diameter of the sphere at zoom 1, device px
+uniform float uMinR;          // marked circles smaller than this get a ring, device px
 out vec4 outColor;
 
 vec3 cen(int i) { return texelFetch(uCirc, ivec2(i, 0), 0).xyz; }
@@ -46,11 +47,18 @@ void main() {
   float pa = max(length(fwidth(u)), 1e-5);   // angle per pixel
 
   float best = 1e9; int bi = -1;
+  float minAng = uMinR * pa, mk = 1e9; int mi = -1;
   for (int i = 0; i < uNV; i++) {
     vec4 c = texelFetch(uCirc, ivec2(i, 0), 0);
-    float d = acos(clamp(dot(u, c.xyz), -1.0, 1.0)) - c.w;
+    float ang = acos(clamp(dot(u, c.xyz), -1.0, 1.0));
+    float d = ang - c.w;
     if (d < best) { best = d; bi = i; }
+    if (c.w < minAng && ang < 2.0 * minAng && texelFetch(uCirc, ivec2(i, 2), 0).x > 0.5) {
+      float md = abs(ang - minAng);
+      if (md < mk) { mk = md; mi = i; }
+    }
   }
+  float rad = bi >= 0 ? texelFetch(uCirc, ivec2(bi, 0), 0).w : 1.0;
   vec3 gap = vec3(0.10, 0.11, 0.15);
   vec3 col = gap;
   if (bi >= 0) {
@@ -62,7 +70,8 @@ void main() {
     float rim = smoothstep(-6.0 * pa, 0.0, best);
     fill *= 1.0 - 0.18 * rim;
     col = mix(gap, fill, inside);
-    float ring = 1.0 - smoothstep(0.6 * uLine * pa, (0.6 * uLine + 1.0) * pa, abs(best));
+    float rw = min(0.6 * uLine * pa, 0.12 * rad);
+    float ring = 1.0 - smoothstep(rw, rw + pa, abs(best));
     col = mix(col, vec3(0.05, 0.05, 0.08), 0.85 * ring);
     if (cc.a > 0.5) {
       float glow = 1.0 - smoothstep(1.2 * uLine * pa, (1.2 * uLine + 1.5) * pa, abs(best));
@@ -78,7 +87,7 @@ void main() {
     if (E.z > 0.5) { if (d < hd) { hd = d; hstyle = E.z; } }
     else ed = min(ed, d);
   }
-  float lw = 0.5 * uLine * pa;
+  float lw = min(0.5 * uLine * pa, 0.08 * rad);
   col = mix(col, vec3(0.06, 0.06, 0.09), 0.75 * (1.0 - smoothstep(lw, lw + pa, ed)));
   if (hd < 9.0) {
     vec3 hc = hstyle < 1.5 ? vec3(1.0, 0.85, 0.2) : vec3(1.0, 0.3, 0.3);
@@ -91,6 +100,14 @@ void main() {
     float dash = step(0.5, fract(t / (14.0 * pa)));
     float gw = 1.1 * uLine * pa;
     col = mix(col, vec3(0.55, 0.95, 1.0), dash * (1.0 - smoothstep(gw, gw + pa, d)));
+  }
+
+  // marker rings for tiny circles
+  if (mi >= 0) {
+    vec3 mc = texelFetch(uCirc, ivec2(mi, 1), 0).rgb;
+    float mw = 0.9 * uLine * pa;
+    col = mix(col, vec3(0.03, 0.03, 0.05), 0.9 * (1.0 - smoothstep(mw + 0.8 * pa, mw + 1.8 * pa, mk)));
+    col = mix(col, mc, 1.0 - smoothstep(mw, mw + pa, mk));
   }
 
   // lighting
@@ -127,11 +144,13 @@ export class SphereRenderer {
     gl.enableVertexAttribArray(loc);
     gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
     this.u = {};
-    for (const n of ['uRes', 'uZoom', 'uRot', 'uCirc', 'uEdge', 'uNV', 'uNE', 'uGhost', 'uLine', 'uOff', 'uSize']) this.u[n] = gl.getUniformLocation(prog, n);
+    for (const n of ['uRes', 'uZoom', 'uRot', 'uCirc', 'uEdge', 'uNV', 'uNE', 'uGhost', 'uLine', 'uOff', 'uSize', 'uMinR']) this.u[n] = gl.getUniformLocation(prog, n);
     this.circTex = this.makeTex(); this.edgeTex = this.makeTex();
     this.zoom = 0.92;
     this.rot = [1, 0, 0, 0, 1, 0, 0, 0, 1]; // row-major
     this.ghost = [-1, -1, 0, 0];
+    this.lineScale = 1;
+    this.markerPx = 6;        // CSS px radius of the marker ring
     this.layout = () => ({ cx: 0, cy: 0, size: Math.min(this.canvas.clientWidth, this.canvas.clientHeight) });
   }
 
@@ -145,15 +164,17 @@ export class SphereRenderer {
     return t;
   }
 
-  // circles: Float32Array of 8 per circle (nx, ny, nz, r, R, G, B, highlight)
-  setCircles(data, n) {
-    const gl = this.gl, buf = new Float32Array(8 * n);
+  // circles: Float32Array of 8 per circle (nx, ny, nz, r, R, G, B, highlight);
+  // marked[i] true draws a ring around circle i when it is too small to see
+  setCircles(data, n, marked) {
+    const gl = this.gl, buf = new Float32Array(12 * n);
     for (let i = 0; i < n; i++) {
       buf.set(data.subarray(8 * i, 8 * i + 4), 4 * i);
       buf.set(data.subarray(8 * i + 4, 8 * i + 8), 4 * (n + i));
+      buf[4 * (2 * n + i)] = marked && marked[i] ? 1 : 0;
     }
     gl.bindTexture(gl.TEXTURE_2D, this.circTex);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, n, 2, 0, gl.RGBA, gl.FLOAT, buf);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, n, 3, 0, gl.RGBA, gl.FLOAT, buf);
     this.nV = n;
   }
 
@@ -190,7 +211,8 @@ export class SphereRenderer {
     gl.uniform1i(u.uNV, this.nV || 0);
     gl.uniform1i(u.uNE, this.nE || 0);
     gl.uniform4fv(u.uGhost, this.ghost);
-    gl.uniform1f(u.uLine, 1.4 * this.dpr * Math.min(1.6, Math.max(0.7, this.zoom)));
+    gl.uniform1f(u.uLine, 1.4 * this.lineScale * this.dpr * Math.min(1.6, Math.max(0.7, this.zoom)));
+    gl.uniform1f(u.uMinR, this.markerPx * this.dpr);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
   }
 
