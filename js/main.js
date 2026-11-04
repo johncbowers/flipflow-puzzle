@@ -1,7 +1,8 @@
 import { LEVELS, DIFFICULTY, buildGoal, scramble, solved } from './levels.js';
 import { Flow, lorToCap, balanceStep } from './packing.js';
 import { SphereRenderer, arcDistance } from './render.js';
-import { sortedDegrees, degreeHistogram } from './tri.js';
+import { degreeHistogram } from './tri.js';
+import { plan, stateKey } from './solver.js';
 
 const PALETTE = {
   3: '#b18cff', 4: '#5b9dff', 5: '#3fd6b8', 6: '#ece5d2', 7: '#ffbe3d',
@@ -51,6 +52,8 @@ const game = {
   tri: null, P: null, history: [],
   anim: null, hover: null, hintEdge: null, busy: false, won: false,
   locked: new Set(),   // edge keys min * nV + max that may not be flipped
+  plan: null,          // { steps: [[a, b]...], keys: state key before each step }
+  planning: false,
 };
 
 // ------------------------------------------------------------------ setup
@@ -105,6 +108,7 @@ function restart() {
   game.P = game.start.P.slice();
   game.history = [];
   game.locked = new Set();
+  game.plan = null;
   game.anim = null; game.hover = null; game.hintEdge = null; game.won = false;
   ui.par.textContent = game.start.flips;
   ui.goalText.textContent = `Make the degrees match: ${game.level.blurb}.`;
@@ -300,27 +304,53 @@ function undo() {
   startFlip(last.c, last.d, true);
 }
 
-// Greedy hint: the valid flip that best matches the goal's sorted degrees.
-function hint() {
-  if (game.anim) return;
-  const goal = game.goal.degrees;
-  const score = t => {
-    const d = sortedDegrees(t);
-    return d.reduce((s, x, i) => s + Math.abs(x - goal[i]), 0) * 100 + d.reduce((s, x) => s + (x - 6) ** 2, 0);
-  };
-  const base = score(game.tri);
-  let best = null, bestScore = Infinity;
-  for (const [a, b] of game.tri.edges()) {
-    const f = flipInfo(a, b);
-    if (!f.ok) continue;
-    const t = game.tri.clone(); t.flip(a, b);
-    const sc = score(t) + Math.random() * 0.5;
-    if (sc < bestScore) { bestScore = sc; best = f; }
+// Hints follow a plan: a whole sequence of flips to the goal's degree
+// pattern, found by beam search (solver.js). Each hint is the plan's next
+// step, so following hints never cycles; leaving the plan triggers a replan.
+async function hint() {
+  if (game.anim || game.busy || game.planning) return;
+  if (solved(game.tri, game.goal.degrees)) { setStatus('Already solved!'); return; }
+  const key = stateKey(game.tri);
+  let i = game.plan ? game.plan.keys.indexOf(key) : -1;
+  if (i < 0 || !flipInfo(...game.plan.steps[i]).ok) {
+    game.planning = true;
+    ui.hint.disabled = true;
+    setStatus('Hint: planning a route to the goal…');
+    const tri = game.tri;
+    let steps = await plan(tri, game.goal.degrees, {
+      canFlip: (a, b) => !isLocked(a, b), timeMs: 6000, seed: (Math.random() * 1e9) | 0,
+    });
+    if (!steps) steps = retrace();
+    game.planning = false;
+    ui.hint.disabled = false;
+    if (game.tri !== tri) { setStatus('The puzzle changed while planning; press Hint again.'); return; }
+    if (!steps) { setStatus('No hint found with the current locks. Try unlocking some edges.'); return; }
+    game.plan = withKeys(tri, steps);
+    i = 0;
   }
-  if (!best) return;
-  game.hintEdge = best; game.hover = null;
+  const info = flipInfo(...game.plan.steps[i]);
+  const left = game.plan.steps.length - i;
+  game.hintEdge = info; game.hover = null;
   refreshEdges();
-  setStatus(bestScore < base ? 'Hint: try the highlighted edge.' : 'Hint: no single flip helps right now; the highlighted one does least harm.');
+  setStatus(`Hint: flip the highlighted edge. This plan reaches the goal in ${left} flip${left === 1 ? '' : 's'}.`);
+}
+
+// Fallback plan: undo the player's flips, then undo the scramble.
+function retrace() {
+  const steps = [...game.history].reverse().map(h => [h.c, h.d])
+    .concat([...game.start.path].reverse());
+  const t = game.tri.clone();
+  for (const [a, b] of steps) {
+    if (isLocked(a, b) || !t.flipInfo(a, b).ok) return null;
+    t.flip(a, b);
+  }
+  return steps;
+}
+
+function withKeys(tri, steps) {
+  const t = tri.clone(), keys = [];
+  for (const [a, b] of steps) { keys.push(stateKey(t)); t.flip(a, b); }
+  return { steps, keys };
 }
 
 // --------------------------------------------------------------- input
