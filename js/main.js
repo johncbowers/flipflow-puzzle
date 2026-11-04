@@ -331,8 +331,30 @@ async function hint() {
   const info = flipInfo(...game.plan.steps[i]);
   const left = game.plan.steps.length - i;
   game.hintEdge = info; game.hover = null;
+  focusOn(info.a, info.b);
   refreshEdges();
   setStatus(`Hint: flip the highlighted edge. This plan reaches the goal in ${left} flip${left === 1 ? '' : 's'}.`);
+}
+
+// Turn the sphere so the midpoint of edge ab faces the viewer.
+let focus = null;
+const FOCUS_RATE = 6;   // per second: fraction of the remaining angle closed each frame ~ rate * dt
+function focusOn(a, b) { focus = { a, b, t: 0 }; spin = null; }
+
+function stepFocus(dt) {
+  focus.t += dt;
+  const na = lorToCap(game.P, focus.a).n, nb = lorToCap(game.P, focus.b).n;
+  let m = na.map((x, i) => x + nb[i]);
+  const l = Math.hypot(...m); m = m.map(x => x / l);
+  const R = main.rot;
+  const v = [0, 1, 2].map(i => R[3 * i] * m[0] + R[3 * i + 1] * m[1] + R[3 * i + 2] * m[2]);
+  const ang = Math.acos(Math.max(-1, Math.min(1, v[2])));
+  if (ang < 1e-3 || focus.t > 2) { focus = null; return; }
+  // axis v x (0, 0, 1); for a point straight behind, any axis in the screen plane works
+  let ax = [v[1], -v[0], 0];
+  const al = Math.hypot(...ax);
+  ax = al < 1e-9 ? [1, 0, 0] : ax.map(x => x / al);
+  main.rotateAbout(ax, ang * Math.min(1, FOCUS_RATE * dt));
 }
 
 // Fallback plan: undo the player's flips, then undo the scramble.
@@ -389,7 +411,7 @@ let spin = null;
 const SPIN_DECAY = 0.9;   // seconds for the spin to fall by a factor e
 
 canvas.addEventListener('pointerdown', e => {
-  spin = null;
+  spin = null; focus = null;
   try { canvas.setPointerCapture(e.pointerId); } catch { /* pointer already gone */ }
   if (e.pointerType === 'mouse' || e.isPrimary) pinch.clear();   // drop any pointer whose up we missed
   pinch.set(e.pointerId, [e.clientX, e.clientY]);
@@ -500,7 +522,7 @@ window.addEventListener('keydown', e => {
   else if (e.key === 'Escape') { ui.help.classList.add('hidden'); ui.win.classList.add('hidden'); }
 });
 
-function resetView() { spin = null; main.rot = [1, 0, 0, 0, 1, 0, 0, 0, 1]; main.zoom = 1; }
+function resetView() { spin = null; focus = null; main.rot = [1, 0, 0, 0, 1, 0, 0, 0, 1]; main.zoom = 1; }
 
 ui.newBtn.onclick = () => newPuzzle(LEVELS.find(l => l.id === ui.level.value), ui.difficulty.value, randomSeed());
 ui.level.onchange = ui.newBtn.onclick;
@@ -520,6 +542,7 @@ let last = performance.now(), previewAngle = 0, dirty = true, lastViewKey = '';
 function frame(now) {
   const dt = Math.min(0.05, (now - last) / 1000);
   last = now;
+  if (focus && !pointer && game.P) stepFocus(dt);
   if (spin && !pointer) {
     const w = Math.hypot(...spin);
     main.rotateAbout(spin.map(x => x / w), w * dt);
