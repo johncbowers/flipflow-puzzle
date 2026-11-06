@@ -10,6 +10,7 @@
 // by W1 with random tie-breaks so plateaus get explored.
 
 import { rng } from './levels.js';
+import { isoKey, isIsomorphic } from './iso.js';
 
 const MAXD = 64;
 
@@ -35,14 +36,52 @@ export function stateKey(tri) {
 
 const tick = () => new Promise(r => setTimeout(r, 0));
 
+// Structure: for each pair of defect degrees, the sorted graph distances
+// between defects of those degrees. Comparing these with the goal's guides
+// the search toward the goal's arrangement, not just its degree counts.
+function profile(t) {
+  const special = [];
+  for (let v = 0; v < t.nV; v++) if (t.degree(v) !== 6) special.push(v);
+  const groups = new Map(), d = new Int32Array(t.nV);
+  for (const s of special) {
+    d.fill(-1); d[s] = 0;
+    const q = [s];
+    for (let h = 0; h < q.length; h++) for (const w of t.nbrs[q[h]]) if (d[w] < 0) { d[w] = d[q[h]] + 1; q.push(w); }
+    for (const u of special) {
+      if (u <= s) continue;
+      const k = Math.min(t.degree(s), t.degree(u)) * 100 + Math.max(t.degree(s), t.degree(u));
+      if (!groups.has(k)) groups.set(k, []);
+      groups.get(k).push(d[u]);
+    }
+  }
+  for (const a of groups.values()) a.sort((x, y) => x - y);
+  return groups;
+}
+
+function profileDistance(p, goal) {
+  let s = 0;
+  for (const [k, g] of goal) {
+    const a = p.get(k) || [];
+    const m = Math.min(a.length, g.length);
+    for (let i = 0; i < m; i++) s += Math.abs(a[i] - g[i]);
+    s += 3 * Math.abs(a.length - g.length);
+  }
+  for (const [k, a] of p) if (!goal.has(k)) s += 3 * a.length;
+  return s;
+}
+
 // Returns a list of edges [a, b] to flip in order, or null if none was found
-// within the budget. `canFlip(a, b)` excludes locked edges.
-export async function plan(tri, goalDegrees, { canFlip = () => true, width, maxDepth = 120, timeMs = 2500, seed = 1 } = {}) {
+// within the budget. `canFlip(a, b)` excludes locked edges. With `goalTri`,
+// the target is that exact triangulation up to isomorphism (Hard mode), and
+// states are also ranked by how far their defect arrangement is from it.
+export async function plan(tri, goalDegrees, { canFlip = () => true, width, maxDepth = 120, timeMs = 2500, seed = 1, goalTri = null } = {}) {
+  const key = goalTri && isoKey(goalTri), goalProfile = goalTri && profile(goalTri);
+  const done = (t, w) => w === 0 && (!key || isIsomorphic(t, key));
   const R = rng(seed);
   const g = histogram(goalDegrees);
   width = width || (tri.nV <= 40 ? 300 : tri.nV <= 60 ? 160 : 80);
   const start = { tri, h: histogram(tri.degrees()), parent: null, edge: null };
-  if (w1(start.h, g) === 0) return [];
+  if (done(tri, w1(start.h, g))) return [];
   const seen = new Set([stateKey(tri)]);
   const t0 = performance.now();
   let beam = [start];
@@ -64,22 +103,27 @@ export async function plan(tri, goalDegrees, { canFlip = () => true, width, maxD
       }
     }
     kids.sort((x, y) => x.score - y.score);
-    const next = [];
+    // Degree counts alone: keep the best `width`. Hard mode: shortlist three
+    // times as many, then rank by degree distance plus structure distance.
+    const take = goalTri ? 3 * width : width;
+    let next = [];
     for (const k of kids) {
-      if (next.length >= width) break;
+      if (next.length >= take) break;
       const s = beam[k.si], t = s.tri.clone();
       t.flip(k.a, k.b);
-      const key = stateKey(t);
-      if (seen.has(key)) continue;
-      seen.add(key);
-      const node = { tri: t, h: histogram(t.degrees()), parent: s, edge: [k.a, k.b] };
-      if (Math.floor(k.score) === 0) {
+      const sk = stateKey(t);
+      if (seen.has(sk)) continue;
+      seen.add(sk);
+      const node = { tri: t, h: histogram(t.degrees()), parent: s, edge: [k.a, k.b], w: Math.floor(k.score) };
+      if (done(t, node.w)) {
         const path = [];
         for (let n = node; n.parent; n = n.parent) path.push(n.edge);
         return path.reverse();
       }
+      if (goalTri) node.rank = 2 * node.w + profileDistance(profile(t), goalProfile) + R();
       next.push(node);
     }
+    if (goalTri) next = next.sort((x, y) => x.rank - y.rank).slice(0, width);
     beam = next;
     if (performance.now() - t0 > timeMs) return null;
     await tick();

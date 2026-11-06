@@ -1,8 +1,9 @@
-import { LEVELS, DIFFICULTY, buildGoal, scramble, solved } from './levels.js';
+import { LEVELS, SCRAMBLE, buildGoal, scramble, solved, blurb } from './levels.js';
 import { Flow, lorToCap, balanceStep } from './packing.js';
 import { SphereRenderer, arcDistance } from './render.js';
 import { degreeHistogram } from './tri.js';
 import { plan, stateKey } from './solver.js';
+import { isoKey, isIsomorphic } from './iso.js';
 
 const PALETTE = {
   3: '#b18cff', 4: '#5b9dff', 5: '#3fd6b8', 6: '#ece5d2', 7: '#ffbe3d',
@@ -15,12 +16,13 @@ const LONG_PRESS_MS = 450;
 
 const $ = id => document.getElementById(id);
 const ui = {
-  level: $('level'), difficulty: $('difficulty'), newBtn: $('newBtn'), helpBtn: $('helpBtn'),
+  level: $('level'), scramble: $('scramble'), mode: $('mode'), newBtn: $('newBtn'), helpBtn: $('helpBtn'),
   undo: $('undoBtn'), hint: $('hintBtn'), reset: $('resetBtn'), view: $('viewBtn'),
   status: $('status'), moves: $('moves'), par: $('par'), overload: $('overload'),
   goalText: $('goalText'), chips: $('degChips'), degBody: document.querySelector('#degTable tbody'),
   loading: $('loading'), loadingText: $('loadingText'), bar: $('progressBar'),
   win: $('win'), toast: $('toast'), winText: $('winText'), help: $('help'),
+  winTitle: $('winTitle'), winNudge: $('winNudge'), winHard: $('winHard'), winNew: $('winNew'), structLine: $('structLine'),
 };
 
 let main, preview;
@@ -47,10 +49,11 @@ main.layout = () => {
 main.zoom = 1;
 
 const game = {
-  level: null, diff: 'medium', seed: 0,
+  level: null, scramble: 'medium', mode: 'easy', seed: 0,
   goal: null, start: null,
   tri: null, P: null, history: [],
-  anim: null, hover: null, hintEdge: null, busy: false, won: false,
+  anim: null, hover: null, hintEdge: null, busy: false,
+  wonEasy: false, wonHard: false,
   locked: new Set(),   // edge keys min * nV + max that may not be flipped
   plan: null,          // { steps: [[a, b]...], keys: state key before each step }
   planning: false,
@@ -58,21 +61,28 @@ const game = {
 
 // ------------------------------------------------------------------ setup
 
-for (const L of LEVELS) {
-  const o = document.createElement('option');
-  o.value = L.id; o.textContent = L.name; ui.level.appendChild(o);
+for (const [group, label] of [[3, 'Defects on a 3-valent frame'], ['hi', 'Defects at frame vertices (4-, 5-, 7-valent)']]) {
+  const og = document.createElement('optgroup');
+  og.label = label;
+  for (const L of LEVELS.filter(l => l.group === group)) {
+    const o = document.createElement('option');
+    o.value = L.id; o.textContent = L.name; og.appendChild(o);
+  }
+  ui.level.appendChild(og);
 }
 
 function readParams() {
   const q = new URLSearchParams(location.search);
   const lv = LEVELS.find(l => l.id === q.get('level')) || LEVELS.find(l => l.id === 'ico32');
-  const d = DIFFICULTY[q.get('d')] ? q.get('d') : 'medium';
+  const old = { easy: 'short', medium: 'medium', hard: 'long' };   // links from before Scramble
+  const sc = SCRAMBLE[q.get('s')] ? q.get('s') : old[q.get('d')] || 'medium';
+  const mode = q.get('m') === 'hard' ? 'hard' : 'easy';
   const s = parseInt(q.get('seed'), 10);
-  return { lv, d, seed: Number.isFinite(s) ? s : randomSeed() };
+  return { lv, sc, mode, seed: Number.isFinite(s) ? s : randomSeed() };
 }
 function randomSeed() { return Math.floor(Math.random() * 1e6); }
 function writeParams() {
-  const q = new URLSearchParams({ level: game.level.id, d: game.diff, seed: String(game.seed) });
+  const q = new URLSearchParams({ level: game.level.id, s: game.scramble, m: game.mode, seed: String(game.seed) });
   history.replaceState(null, '', '?' + q.toString());
 }
 
@@ -82,19 +92,21 @@ function showLoading(text) {
 }
 const progress = x => { ui.bar.style.width = `${Math.round(100 * x)}%`; };
 
-async function newPuzzle(level, diff, seed) {
+async function newPuzzle(level, sc, seed) {
   if (game.busy) return;
   game.busy = true;
   game.anim = null; game.hover = null; game.hintEdge = null;
-  game.level = level; game.diff = diff; game.seed = seed;
-  ui.level.value = level.id; ui.difficulty.value = diff;
+  game.level = level; game.scramble = sc; game.seed = seed;
+  ui.level.value = level.id; ui.scramble.value = sc; ui.mode.value = game.mode;
   writeParams();
   showLoading(`Building the ${level.name} goal…`);
   await new Promise(r => setTimeout(r, 30));
   game.goal = await buildGoal(level, progress);
+  game.goal.key ??= isoKey(game.goal.tri);
+  game.goal.blurb ??= blurb(game.goal.degrees);
   ui.loadingText.textContent = 'Scrambling by flip-and-flow…';
   progress(0);
-  const s = await scramble(game.goal, DIFFICULTY[diff], seed, progress);
+  const s = await scramble(game.goal, SCRAMBLE[sc], seed, progress);
   game.start = { tri: s.tri.clone(), P: s.P.slice(), flips: s.scrambleFlips, path: s.path };
   ui.loading.classList.add('hidden');
   ui.win.classList.add('hidden');
@@ -109,9 +121,10 @@ function restart() {
   game.history = [];
   game.locked = new Set();
   game.plan = null;
-  game.anim = null; game.hover = null; game.hintEdge = null; game.won = false;
+  game.anim = null; game.hover = null; game.hintEdge = null;
+  game.wonEasy = game.wonHard = false;
   ui.par.textContent = game.start.flips;
-  ui.goalText.textContent = `Make the degrees match: ${game.level.blurb}.`;
+  setGoalText();
   setStatus('Click an edge to flip it.');
   refreshEdges();
   updatePanel();
@@ -131,6 +144,24 @@ function setupPreview() {
 
 function setStatus(t) { ui.status.textContent = t; }
 
+function setGoalText() {
+  ui.goalText.textContent = game.mode === 'hard'
+    ? `Hard: build the exact structure in the preview, ${game.level.frame} (${game.goal.blurb}).`
+    : `Easy: match the degree counts, ${game.goal.blurb}.`;
+}
+
+// Do the degree counts match, and is the triangulation the goal's (up to
+// rotation and reflection)? Cached per triangulation object.
+let structCache = { tri: null, deg: false, iso: false };
+function matchState() {
+  if (structCache.tri !== game.tri) {
+    const deg = solved(game.tri, game.goal.degrees);
+    structCache = { tri: game.tri, deg, iso: deg && isIsomorphic(game.tri, game.goal.key) };
+  }
+  return structCache;
+}
+const goalReached = () => (game.mode === 'hard' ? matchState().iso : matchState().deg);
+
 function excess(tri) { return tri.degrees().reduce((s, d) => s + Math.max(0, d - 6), 0); }
 
 function updatePanel() {
@@ -148,6 +179,10 @@ function updatePanel() {
     tr.innerHTML = `<td><span class="swatch" style="background:${colorOf(d)}"></span></td><td>${d}</td><td class="now">${n}</td><td>${g || '–'}</td>`;
     ui.degBody.appendChild(tr);
   }
+  const m = matchState();
+  ui.structLine.className = 'struct-line' + (m.deg ? (m.iso ? ' ok' : ' bad') : '');
+  ui.structLine.textContent = !m.deg ? (game.mode === 'hard' ? 'Structure: degree counts first' : '')
+    : m.iso ? 'Structure: matches the goal ✓' : 'Structure: counts match, arrangement differs';
   ui.moves.textContent = game.history.length;
   ui.overload.textContent = excess(game.tri);
   ui.undo.disabled = !game.history.length;
@@ -286,15 +321,56 @@ function finishFlip() {
   game.anim = null;
   refreshEdges();
   updatePanel();
-  if (!game.won && solved(game.tri, game.goal.degrees)) {
-    game.won = true;
-    const n = game.history.length;
-    ui.winText.textContent = `You reached ${game.level.blurb} in ${n} flip${n === 1 ? '' : 's'} (the scramble used ${game.start.flips}).`;
+  if (!checkWin()) setStatus(A.isUndo ? 'Undone.' : `Flipped. Excess is now ${excess(game.tri)}.`);
+}
+
+// Show the win card the first time the current mode's goal is reached.
+// Returns true if it set the status.
+function checkWin() {
+  const m = matchState(), n = game.history.length;
+  const flips = `in ${n} flip${n === 1 ? '' : 's'} (the scramble used ${game.start.flips})`;
+  let show = false;
+  if (game.mode === 'easy' && m.deg && !game.wonEasy) {
+    game.wonEasy = true;
+    if (m.iso) game.wonHard = true;
+    ui.winTitle.textContent = m.iso ? 'Solved, structure and all!' : 'Solved on Easy!';
+    ui.winText.textContent = `You matched the degree counts, ${game.goal.blurb}, ${flips}.`;
+    ui.winNudge.textContent = m.iso
+      ? 'Your triangulation is the goal\'s exact structure too, which counts as a Hard-mode solve.'
+      : `Your degrees are right, but they are arranged differently from the goal's frame, ${game.level.frame}. Can you finish it in Hard mode?`;
+    ui.winHard.classList.toggle('hidden-btn', m.iso);
+    ui.winNew.classList.toggle('primary', m.iso);
+    show = true;
+  } else if (game.mode === 'hard' && m.iso && !game.wonHard) {
+    game.wonHard = game.wonEasy = true;
+    ui.winTitle.textContent = 'Solved on Hard!';
+    ui.winText.textContent = `You built the goal's exact structure, ${game.level.frame}, ${flips}.`;
+    ui.winNudge.textContent = '';
+    ui.winHard.classList.add('hidden-btn');
+    ui.winNew.classList.add('primary');
+    show = true;
+  }
+  if (show) {
     setTimeout(() => ui.win.classList.remove('hidden'), 450);
     setStatus('Solved!');
-  } else {
-    setStatus(A.isUndo ? 'Undone.' : `Flipped. Excess is now ${excess(game.tri)}.`);
+    return true;
   }
+  if (game.mode === 'hard' && m.deg && !m.iso) {
+    setStatus('The degree counts match, but the arrangement is not the goal\'s yet. Compare with the preview.');
+    return true;
+  }
+  return false;
+}
+
+function setMode(mode) {
+  game.mode = mode;
+  ui.mode.value = mode;
+  game.plan = null;
+  writeParams();
+  setGoalText();
+  updatePanel();
+  refreshEdges();
+  if (!checkWin()) setStatus(mode === 'hard' ? 'Hard mode: build the goal\'s exact structure.' : 'Easy mode: match the degree counts.');
 }
 
 function undo() {
@@ -309,7 +385,7 @@ function undo() {
 // step, so following hints never cycles; leaving the plan triggers a replan.
 async function hint() {
   if (game.anim || game.busy || game.planning) return;
-  if (solved(game.tri, game.goal.degrees)) { setStatus('Already solved!'); return; }
+  if (goalReached()) { setStatus('Already solved!'); return; }
   const key = stateKey(game.tri);
   let i = game.plan ? game.plan.keys.indexOf(key) : -1;
   if (i < 0 || !flipInfo(...game.plan.steps[i]).ok) {
@@ -319,13 +395,16 @@ async function hint() {
     const tri = game.tri;
     let steps = await plan(tri, game.goal.degrees, {
       canFlip: (a, b) => !isLocked(a, b), timeMs: 6000, seed: (Math.random() * 1e9) | 0,
+      goalTri: game.mode === 'hard' ? game.goal.tri : null,
     });
-    if (!steps) steps = retrace();
+    let retraced = false;
+    if (!steps) { steps = retrace(); retraced = true; }
     game.planning = false;
     ui.hint.disabled = false;
     if (game.tri !== tri) { setStatus('The puzzle changed while planning; press Hint again.'); return; }
     if (!steps) { setStatus('No hint found with the current locks. Try unlocking some edges.'); return; }
     game.plan = withKeys(tri, steps);
+    game.plan.retraced = retraced;
     i = 0;
   }
   const info = flipInfo(...game.plan.steps[i]);
@@ -333,7 +412,9 @@ async function hint() {
   game.hintEdge = info; game.hover = null;
   focusOn(info.a, info.b);
   refreshEdges();
-  setStatus(`Hint: flip the highlighted edge. This plan reaches the goal in ${left} flip${left === 1 ? '' : 's'}.`);
+  const what = game.mode === 'hard' ? 'the goal structure' : 'the goal';
+  setStatus(`Hint: flip the highlighted edge. This plan reaches ${what} in ${left} flip${left === 1 ? '' : 's'}` +
+    (game.plan.retraced ? ' (by retracing the scramble; the search found nothing shorter in time).' : '.'));
 }
 
 // Turn the sphere so the midpoint of edge ab faces the viewer.
@@ -524,9 +605,11 @@ window.addEventListener('keydown', e => {
 
 function resetView() { spin = null; focus = null; main.rot = [1, 0, 0, 0, 1, 0, 0, 0, 1]; main.zoom = 1; }
 
-ui.newBtn.onclick = () => newPuzzle(LEVELS.find(l => l.id === ui.level.value), ui.difficulty.value, randomSeed());
+ui.newBtn.onclick = () => newPuzzle(LEVELS.find(l => l.id === ui.level.value), ui.scramble.value, randomSeed());
 ui.level.onchange = ui.newBtn.onclick;
-ui.difficulty.onchange = ui.newBtn.onclick;
+ui.scramble.onchange = ui.newBtn.onclick;
+ui.mode.onchange = () => setMode(ui.mode.value);
+ui.winHard.onclick = () => { ui.win.classList.add('hidden'); setMode('hard'); };
 ui.undo.onclick = undo;
 ui.hint.onclick = hint;
 ui.reset.onclick = () => { if (!game.anim && !game.busy) restart(); };
@@ -571,7 +654,8 @@ function frame(now) {
 
 const first = readParams();
 if (!localStorageGet('ff-seen-help')) { ui.help.classList.remove('hidden'); localStorageSet('ff-seen-help', '1'); }
-newPuzzle(first.lv, first.d, first.seed).then(() => requestAnimationFrame(frame));
+game.mode = first.mode;
+newPuzzle(first.lv, first.sc, first.seed).then(() => requestAnimationFrame(frame));
 
 // for debugging from the console
 window.flipflow = { game, main, startFlip, undo, hint };

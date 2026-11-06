@@ -36,7 +36,7 @@ function det3(a, b, c) {
 function normalize(v) { const m = Math.hypot(...v); return v.map(x => x / m); }
 
 // Convex hull of a few points on the sphere, by brute force.
-function hullFaces(pts) {
+export function hullFaces(pts) {
   const n = pts.length, faces = [];
   for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) for (let k = j + 1; k < n; k++) {
     const a = pts[i], b = pts[j], c = pts[k];
@@ -300,31 +300,33 @@ export function newton(P, C, { maxIt = 10, tol = 1e-11 } = {}) {
 // each new edge cd carries a target inversive distance -cosh((1 - s) * delta0),
 // moving from the current separation (s = 0) to tangency (s = 1). The old
 // edges ab are released and drift apart (Connelly-Gortler; Bowers).
-export class Flow {
-  constructor(tri, P, flipEdges) {
-    this.tri0 = tri;
-    const t = tri.clone();
-    this.flips = flipEdges.map(([a, b]) => t.flip(a, b));
-    this.tri1 = t;
-    const newKey = new Map(this.flips.map((f, i) => [Math.min(f.c, f.d) * t.nV + Math.max(f.c, f.d), i]));
+// Continuation toward a tangency packing of `tri`: every edge of tri is
+// tangent except the `moving` edges, each of which carries a target
+// inversive distance -cosh((1 - s) * delta0), moving from its current
+// separation (s = 0) to tangency (s = 1). Non-adjacent circles must stay
+// disjoint throughout.
+export class Continuation {
+  constructor(tri, P, moving) {
+    this.tri1 = tri;
+    const n = tri.nV;
+    const rowOf = new Map(moving.map(([c, d], i) => [Math.min(c, d) * n + Math.max(c, d), i]));
     const pairs = [];
-    this.flowRows = new Array(this.flips.length);
-    for (const [a, b] of t.edges()) {
-      const key = a * t.nV + b;
-      if (newKey.has(key)) this.flowRows[newKey.get(key)] = t.nV + pairs.length;
+    this.moveRows = new Array(moving.length);
+    for (const [a, b] of tri.edges()) {
+      const key = a * n + b;
+      if (rowOf.has(key)) this.moveRows[rowOf.get(key)] = n + pairs.length;
       pairs.push([a, b, -1]);
     }
-    this.C = new Constraints(t.nV, pairs);
-    this.delta0 = this.flips.map(f => Math.acosh(Math.max(1, -lor(P, f.c, P, f.d))));
+    this.C = new Constraints(n, pairs);
+    this.delta0 = moving.map(([c, d]) => Math.acosh(Math.max(1, -lor(P, c, P, d))));
     this.s = 0;
     this.setS(0);
-    // non-adjacent pairs in the new triangulation, for the packing check
     this.nonAdj = [];
-    for (let a = 0; a < t.nV; a++) for (let b = a + 1; b < t.nV; b++) if (!t.hasEdge(a, b)) this.nonAdj.push(a, b);
+    for (let a = 0; a < n; a++) for (let b = a + 1; b < n; b++) if (!tri.hasEdge(a, b)) this.nonAdj.push(a, b);
   }
 
   setS(s) {
-    this.flips.forEach((f, i) => { this.C.T[this.flowRows[i]] = -Math.cosh((1 - s) * this.delta0[i]); });
+    this.moveRows.forEach((row, i) => { this.C.T[row] = -Math.cosh((1 - s) * this.delta0[i]); });
   }
 
   isPacking(P) {
@@ -351,6 +353,33 @@ export class Flow {
     const mid = 0.5 * (this.s + s1);
     return this.advance(P, mid, maxDepth, depth + 1) && this.advance(P, s1, maxDepth, depth + 1);
   }
+}
+
+// Flows the packing P of `tri` to a packing of the triangulation obtained by
+// flipping every edge in `flipEdges` (which must touch pairwise disjoint faces).
+// The new edges cd move to tangency while the old edges ab are released and
+// drift apart (Connelly-Gortler; Bowers).
+export class Flow extends Continuation {
+  constructor(tri, P, flipEdges) {
+    const t = tri.clone();
+    const flips = flipEdges.map(([a, b]) => t.flip(a, b));
+    super(t, P, flips.map(f => [f.c, f.d]));
+    this.tri0 = tri;
+    this.flips = flips;
+  }
+}
+
+// Caps at the given centers, small enough that neighbors are disjoint:
+// a starting point for flowing every edge to tangency.
+export function separatedCaps(tri, centers) {
+  const P = new Float64Array(4 * tri.nV);
+  const n = centers.map(normalize);
+  for (let v = 0; v < tri.nV; v++) {
+    let m = Math.PI;
+    for (const w of tri.nbrs[v]) m = Math.min(m, Math.acos(Math.max(-1, Math.min(1, n[v][0] * n[w][0] + n[v][1] * n[w][1] + n[v][2] * n[w][2]))));
+    P.set(capToLor(n[v], 0.4 * m), 4 * v);
+  }
+  return P;
 }
 
 // ---------------------------------------------------------------- balancing

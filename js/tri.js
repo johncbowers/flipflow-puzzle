@@ -76,6 +76,21 @@ export class Triangulation {
     }
     return { tri: new Triangulation(next, faces), parent };
   }
+
+  // Loop (edge-split) subdivision: a vertex on every edge, each face cut into
+  // four. Old vertices keep their degree; new ones have degree 6. Returns the
+  // new triangulation and, for each new vertex, the edge it splits.
+  loop() {
+    const n = this.nV, mid = new Map(), ends = [];
+    for (const [a, b] of this.edges()) { mid.set(a * n + b, n + ends.length); ends.push([a, b]); }
+    const m = (a, b) => mid.get(Math.min(a, b) * n + Math.max(a, b));
+    const faces = [];
+    for (const [a, b, c] of this.faces) {
+      const ab = m(a, b), bc = m(b, c), ca = m(c, a);
+      faces.push([a, ab, ca], [b, bc, ab], [c, ca, bc], [ab, bc, ca]);
+    }
+    return { tri: new Triangulation(n + ends.length, faces), ends };
+  }
 }
 
 export function sortedDegrees(tri) {

@@ -1,30 +1,74 @@
 // Goal triangulations and their packings, and scrambled puzzles.
 //
-// Goals come from the tetrahedron, octahedron and icosahedron by repeated
-// sqrt(3)-subdivision (insert a vertex in every face, then flip every old
-// edge). Old vertices keep their degree and new ones have degree 6, so the
-// goals have four 3s, six 4s or twelve 5s and the rest 6s. The packings are
-// built the same way: the base solids pack exactly, an inserted vertex gets
-// the circle in its face's interstice, and the old edges are flipped by
-// flip-and-flow.
+// Each goal is a frame polyhedron with its faces filled by a patch of 6s.
+// Two constructions:
+// - sqrt(3)-subdivision of the tetrahedron, octahedron or icosahedron
+//   (insert a vertex in every face, then flip every old edge). The defects
+//   sit at face centers of a 3-valent frame (the cube, the dodecahedron...).
+//   Packings: the base solids pack exactly, an inserted vertex gets the
+//   circle in its face's interstice, and the old edges flip by flip-and-flow.
+// - Loop (edge-split) subdivision of a deltahedron or bipyramid. The defects
+//   are the frame's own vertices, so their degrees are the frame's valences:
+//   4s, 5s, mixes, even 7s. Packings: small disjoint circles at the
+//   subdivided points, then every edge flows to tangency (Continuation).
+// Old vertices keep their degree and new ones have degree 6 in both cases.
 
-import { Triangulation, sortedDegrees } from './tri.js';
-import { baseSolid, insertInFace, Flow, balanceFully, lor } from './packing.js';
+import { Triangulation, sortedDegrees, degreeHistogram } from './tri.js';
+import { baseSolid, insertInFace, Flow, Continuation, separatedCaps, hullFaces, balanceFully, lor } from './packing.js';
 
 export const LEVELS = [
-  { id: 'oct14', name: 'Octahedral 14', kind: 'oct', subdiv: 1, blurb: 'six 4s, eight 6s' },
-  { id: 'tet20', name: 'Tetrahedral 20', kind: 'tet', subdiv: 2, blurb: 'four 3s, sixteen 6s' },
-  { id: 'ico32', name: 'Buckyball 32', kind: 'ico', subdiv: 1, blurb: 'twelve 5s, twenty 6s' },
-  { id: 'oct38', name: 'Octahedral 38', kind: 'oct', subdiv: 2, blurb: 'six 4s, thirty-two 6s' },
-  { id: 'tet56', name: 'Tetrahedral 56', kind: 'tet', subdiv: 3, blurb: 'four 3s, fifty-two 6s' },
-  { id: 'ico92', name: 'Icosahedral 92', kind: 'ico', subdiv: 2, blurb: 'twelve 5s, eighty 6s' },
+  { id: 'oct14', group: 3, name: 'Cube frame · 14', kind: 'oct', sqrt3: 1, frame: 'a cube (every frame vertex 3-valent)' },
+  { id: 'tet20', group: 3, name: 'Tetrahedral · 20', kind: 'tet', sqrt3: 2, frame: 'a 3-valent frame with tetrahedral symmetry' },
+  { id: 'ico32', group: 3, name: 'Buckyball · 32', kind: 'ico', sqrt3: 1, frame: 'a dodecahedron (every frame vertex 3-valent)' },
+  { id: 'oct38', group: 3, name: 'Octahedral · 38', kind: 'oct', sqrt3: 2, frame: 'a 3-valent frame with octahedral symmetry' },
+  { id: 'tet56', group: 3, name: 'Tetrahedral · 56', kind: 'tet', sqrt3: 3, frame: 'a 3-valent frame with tetrahedral symmetry' },
+  { id: 'ico92', group: 3, name: 'Icosahedral · 92', kind: 'ico', sqrt3: 2, frame: 'a 3-valent frame with icosahedral symmetry' },
+  { id: 'oct18', group: 'hi', name: 'Octahedron · 18', kind: 'oct', loop: 1, frame: 'an octahedron: six 4-valent frame vertices' },
+  { id: 'bip5', group: 'hi', name: 'Pentagonal bipyramid · 22', kind: 'bipy5', loop: 1, frame: 'a pentagonal bipyramid: two 5-valent poles, five 4-valent equator vertices' },
+  { id: 'bip6', group: 'hi', name: 'Hexagonal bipyramid · 26', kind: 'bipy6', loop: 1, frame: 'a hexagonal bipyramid: six 4-valent equator vertices and two 6-valent poles you cannot see by color' },
+  { id: 'bip7', group: 'hi', name: 'Heptagonal bipyramid · 30', kind: 'bipy7', loop: 1, frame: 'a heptagonal bipyramid: two 7-valent poles, seven 4-valent equator vertices' },
+  { id: 'tap', group: 'hi', name: 'Triaugmented prism · 30', kind: 'triaug', loop: 1, frame: 'a triaugmented triangular prism: six 5-valent and three 4-valent frame vertices' },
+  { id: 'gsb', group: 'hi', name: 'Gyroelongated bipyramid · 34', kind: 'gyro', loop: 1, frame: 'a gyroelongated square bipyramid: eight 5-valent and two 4-valent frame vertices' },
+  { id: 'ico42', group: 'hi', name: 'Icosahedron · 42', kind: 'ico', loop: 1, frame: 'an icosahedron: twelve 5-valent frame vertices' },
 ];
 
-export const DIFFICULTY = {
-  easy: { flipsPerV: 0.3, maxDeg: 8 },
+export const SCRAMBLE = {
+  short: { flipsPerV: 0.3, maxDeg: 8 },
   medium: { flipsPerV: 0.55, maxDeg: 9 },
-  hard: { flipsPerV: 0.9, maxDeg: 10 },
+  long: { flipsPerV: 0.9, maxDeg: 10 },
 };
+
+// "twelve 5s, thirty 6s"
+const ONES = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten', 'eleven', 'twelve',
+  'thirteen', 'fourteen', 'fifteen', 'sixteen', 'seventeen', 'eighteen', 'nineteen'];
+const TENS = ['', '', 'twenty', 'thirty', 'forty', 'fifty', 'sixty', 'seventy', 'eighty', 'ninety'];
+const words = n => n < 20 ? ONES[n] : TENS[Math.floor(n / 10)] + (n % 10 ? '-' + ONES[n % 10] : '');
+export function blurb(degrees) {
+  const h = degreeHistogram(degrees);
+  return [...h.keys()].sort((a, b) => (a === 6) - (b === 6) || a - b).map(d => `${words(h.get(d))} ${d}s`).join(', ');
+}
+
+const ring = (k, z, r = 1, ph = 0) =>
+  Array.from({ length: k }, (_, i) => [r * Math.cos(ph + 2 * Math.PI * i / k), r * Math.sin(ph + 2 * Math.PI * i / k), z]);
+
+// Frame vertices for Loop goals (in convex position; the hull gives the faces).
+function framePoints(kind) {
+  const g = (1 + Math.sqrt(5)) / 2;
+  switch (kind) {
+    case 'oct': return [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
+    case 'ico': {
+      const p = [];
+      for (const s of [-1, 1]) for (const t of [-1, 1]) p.push([0, s, t * g], [s, t * g, 0], [t * g, 0, s]);
+      return p;
+    }
+    case 'bipy5': return [...ring(5, 0), [0, 0, 1], [0, 0, -1]];
+    case 'bipy6': return [...ring(6, 0), [0, 0, 1], [0, 0, -1]];
+    case 'bipy7': return [...ring(7, 0), [0, 0, 1], [0, 0, -1]];
+    case 'triaug': return [...ring(3, 0.8), ...ring(3, -0.8), ...ring(3, 0, 1.3, Math.PI / 3)];
+    case 'gyro': return [...ring(4, 0.5), ...ring(4, -0.5, 1, Math.PI / 4), [0, 0, 1.3], [0, 0, -1.3]];
+  }
+  throw new Error('unknown frame ' + kind);
+}
 
 export function rng(seed) {
   let a = seed >>> 0;
@@ -63,11 +107,34 @@ async function sqrt3(tri, P, onProgress) {
 
 const goalCache = new Map();
 
+const unit = v => { const m = Math.hypot(...v); return v.map(x => x / m); };
+
+async function loopGoal(kind, onProgress) {
+  const pts = framePoints(kind);
+  const base = new Triangulation(pts.length, hullFaces(pts));
+  const { tri, ends } = base.loop();
+  const n = pts.map(unit);
+  const centers = [...n, ...ends.map(([a, b]) => unit(n[a].map((x, i) => x + n[b][i])))];
+  const P = separatedCaps(tri, centers);
+  const C = new Continuation(tri, P, tri.edges());
+  const N = 30;
+  for (let i = 1; i <= N; i++) {
+    if (!C.advance(P, i / N)) throw new Error('packing the goal failed');
+    if (onProgress) { onProgress(i / N); await tick(); }
+  }
+  return { tri, P };
+}
+
 export async function buildGoal(level, onProgress) {
   if (goalCache.has(level.id)) return goalCache.get(level.id);
-  let { tri, P } = baseSolid(level.kind);
-  for (let s = 0; s < level.subdiv; s++) {
-    ({ tri, P } = await sqrt3(tri, P, onProgress && (x => onProgress((s + x) / level.subdiv))));
+  let tri, P;
+  if (level.loop) {
+    ({ tri, P } = await loopGoal(level.kind, onProgress));
+  } else {
+    ({ tri, P } = baseSolid(level.kind));
+    for (let s = 0; s < level.sqrt3; s++) {
+      ({ tri, P } = await sqrt3(tri, P, onProgress && (x => onProgress((s + x) / level.sqrt3))));
+    }
   }
   balanceFully(P);
   const goal = { tri, P, degrees: sortedDegrees(tri) };
